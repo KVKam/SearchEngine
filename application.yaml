@@ -15,17 +15,14 @@ spring:
     show-sql: false
 
 indexing-settings:
-  sites:
-#    - url: https://www.lenta.ru/
-#      name: Лента.ру
-#    - url: https://www.skillbox.ru/
-#      name: Skillbox
+  sitesConfig:
     - url: https://www.playback.ru/
       name: PlayBack.Ru
+      timeout: 300
     - url: https://www.svetlovka.ru/
       name: Svetlovka
     - url: https://et-cetera.ru/
       name: Et-cetera
-    - url: https://volochek.life/
-      name: Volochek
+      timeout: 400
+
 

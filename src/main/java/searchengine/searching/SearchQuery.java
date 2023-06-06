@@ -1,90 +1,104 @@
-package searchengine;
+package searchengine.searching;
 
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
 import searchengine.dto.search.SearchData;
+import searchengine.lemmatisator.Lemmatizer;
 import searchengine.model.LemmaTable;
 import searchengine.model.PageTable;
 import searchengine.model.SiteTable;
-import searchengine.services.IndexTableService;
-import searchengine.services.LemmaTableService;
-import searchengine.services.PageTableService;
-import searchengine.services.SiteTableService;
+import searchengine.repositories.IndexRepository;
+import searchengine.repositories.LemmaRepository;
+import searchengine.repositories.PageRepository;
+import searchengine.repositories.SiteRepository;
 
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-public class SearchText {
-    private final SiteTableService siteTableService;
-    private final PageTableService pageTableService;
-    private final LemmaTableService lemmaTableService;
-    private final IndexTableService indexTableService;
+public class SearchQuery {
+    private final SiteRepository siteRepository;
+    private final PageRepository pageRepository;
+    private final LemmaRepository lemmaRepository;
+    private final IndexRepository indexRepository;
     private Lemmatizer lemmatizer;
 
-    public SearchText(SiteTableService siteTableService,
-                      PageTableService pageTableService,
-                      LemmaTableService lemmaTableService,
-                      IndexTableService indexTableService) {
-        this.siteTableService = siteTableService;
-        this.pageTableService = pageTableService;
-        this.lemmaTableService = lemmaTableService;
-        this.indexTableService = indexTableService;
+    public SearchQuery(SiteRepository siteRepository,
+                       PageRepository pageRepository,
+                       LemmaRepository lemmaRepository,
+                       IndexRepository indexRepository) {
+        this.siteRepository = siteRepository;
+        this.pageRepository = pageRepository;
+        this.lemmaRepository = lemmaRepository;
+        this.indexRepository = indexRepository;
     }
 
-    public List<SearchData> searching(String query, String siteUrl, int offset, int limit) {
+    public List<SearchData> getSortedSearchList(String query, String siteUrl, int offset, int limit) {
         lemmatizer = new Lemmatizer();
-        List<String> lemmatizerList = lemmatizer.normFormLemmatizer(query);
-        Map<Integer, List<String>> listIdPageAndLemma = new HashMap<>();
-        if (siteUrl.equals("")) {
-            List<String> listUrl = siteTableService.getAllUrl();
-            for (String url : listUrl) {
-                listIdPageAndLemma.putAll(analysisQuery(lemmatizerList, url));
-            }
-        } else {
-            listIdPageAndLemma.putAll(analysisQuery(lemmatizerList, siteUrl));
-        }
-        if (listIdPageAndLemma.isEmpty()) {
+        List<String> lemmatizerList = lemmatizer.getQueryLemmatizer(query);
+        Map<Integer, List<String>> lemmaMapByPage = getListsLemmasByPageId(lemmatizerList, siteUrl);
+        if (lemmaMapByPage.isEmpty()) {
             return new ArrayList<>();
         }
-        Map<Integer, Float> index = findRelativeRelevance(listIdPageAndLemma);
-        List<SearchData> list = new ArrayList<>();
-        int size = offset + limit < index.size() ? limit
-                : index.size() - offset;
+        Map<Integer, Float> index = findRelativeRelevance(lemmaMapByPage);
+        List<SearchData> sortedList = new ArrayList<>();
+        int size = offset + limit < index.size() ? limit : index.size() - offset;
         int marker = 0;
         for (Integer pageId : index.keySet()) {
             if (marker < offset) {
                 break;
             }
-            list.add(getSearchData(pageId, lemmatizerList, index.get(pageId)));
+            sortedList.add(getSearchData(pageId, lemmatizerList, index.get(pageId)));
             ++marker;
             if (marker == size) {
                 break;
             }
         }
-        return list;
+        return sortedList;
     }
 
-    private Map<Integer, List<String>> analysisQuery(List<String> lemmatizerList, String siteUrl) {
-        SiteTable site = siteTableService.findUrl(siteUrl);
-        long size = pageTableService.count(site);
-        List<LemmaTable> lemmaTableList = new ArrayList<>();
-        for (String partText : lemmatizerList) {
-            LemmaTable lemmaTable = lemmaTableService.findLemmaOnSite(partText, site.getId());
+    private Map<Integer, List<String>> getListsLemmasByPageId(List<String> lemmatizerList, String siteUrl) {
+        Map<Integer, List<String>> lemmaMapByPage = new HashMap<>();
+        if (siteUrl.equals("")) {
+            List<String> listUrl = siteRepository.findAllUrl();
+            for (String url : listUrl) {
+                lemmaMapByPage.putAll(getLemmaMapByUrl(lemmatizerList, url));
+            }
+        } else {
+            lemmaMapByPage.putAll(getLemmaMapByUrl(lemmatizerList, siteUrl));
+        }
+        return lemmaMapByPage;
+    }
+
+    private Map<Integer, List<String>> getLemmaMapByUrl(List<String> lemmatizerList, String siteUrl) {
+        SiteTable foundSite = siteRepository.findByUrl(siteUrl);
+        long size = pageRepository.countBySiteTable(foundSite);
+        List<LemmaTable> foundRowsLemmaTable = new ArrayList<>();
+        for (String lemmatizerWord : lemmatizerList) {
+            LemmaTable lemmaTable = lemmaRepository.findByLemmaAndSiteTable_Id(lemmatizerWord, foundSite.getId());
             if (lemmaTable == null) {
                 return new HashMap<>();
             }
             if (lemmaTable.getFrequency() < (size * 0.7)) {
-                lemmaTableList.add(lemmaTable);
+                foundRowsLemmaTable.add(lemmaTable);
             }
         }
-        lemmaTableList.sort(Comparator.comparing(LemmaTable::getFrequency));
+        foundRowsLemmaTable.sort(Comparator.comparing(LemmaTable::getFrequency));
+        List<String> lemmaList = new ArrayList<>();
+        foundRowsLemmaTable.forEach(o -> lemmaList.add(o.getLemma()));
+        List<Integer> pageIdList = getDuplicatePageIdByLemmas(foundRowsLemmaTable);
+        Map<Integer, List<String>> lemmaMapByPage = new HashMap<>();
+        pageIdList.forEach(t -> lemmaMapByPage.put(t, lemmaList));
+        return lemmaMapByPage;
+    }
+
+    private List<Integer> getDuplicatePageIdByLemmas(List<LemmaTable> rowsLemmaTable) {
         List<Integer> pageId = new ArrayList<>();
-        for (int i = 0; i < lemmaTableList.size(); i++) {
-            List<Integer> list = indexTableService.findIdPageByLemmas(lemmaTableList.get(i).getId());
+        for (int i = 0; i < rowsLemmaTable.size(); i++) {
+            List<Integer> list = indexRepository.findByLemmaTable_IdPage(rowsLemmaTable.get(i).getId());
             if (i == 0) {
                 pageId.addAll(list);
                 continue;
@@ -97,18 +111,16 @@ public class SearchText {
             }
             pageId.removeAll(deleteList);
         }
-        Map<Integer, List<String>> idPage = new HashMap<>();
-        List<String> lemmaList = new ArrayList<>();
-        lemmaTableList.forEach(o -> lemmaList.add(o.getLemma()));
-        pageId.forEach(t -> idPage.put(t, lemmaList));
-        return idPage;
+        return pageId;
     }
+
 
     private Map<Integer, Float> findRelativeRelevance(Map<Integer, List<String>> listIdPageAndLemma) {
         Map<Integer, Float> index = new HashMap<>();
         for (Integer idPage : listIdPageAndLemma.keySet()) {
             for (String lemma : listIdPageAndLemma.get(idPage)) {
-                Float rank = indexTableService.findRank(lemma, idPage);
+                Float rank = indexRepository.findByLemmaTable_LemmaAndPageTable_Id(lemma, idPage)
+                        .describeConstable().orElse(0.0F);
                 if (rank == 0.0F) {
                     continue;
                 }
@@ -130,7 +142,7 @@ public class SearchText {
     }
 
     private SearchData getSearchData(Integer pageId, List<String> textFound, Float relevance) {
-        PageTable pageTable = pageTableService.findById(pageId);
+        PageTable pageTable = pageRepository.findById(pageId).orElse(null);
         String urlSite = pageTable.getSiteTable().getUrl();
         String page = pageTable.getPath();
         Document document = Jsoup.parse(pageTable.getContent());
@@ -151,13 +163,11 @@ public class SearchText {
         return title;
     }
 
-    private StringBuilder getSnippet(Document document, List<String> searchText) {
+    private StringBuilder getSnippet(Document document, List<String> searchQuery) {
         StringBuilder body = new StringBuilder(getTitle(document)).append(" ");
         Elements elementsBody = document.select("body");
         elementsBody.forEach(element -> body.append(element.text()));
-        System.out.println(searchText);
-        List<String> listText = lemmatizer.findWord(body, searchText);
-        System.out.println(listText);
+        List<String> listText = lemmatizer.searchQueryInText(body, searchQuery);
         String textPart = listText.get(0);
         Pattern pattern = Pattern.compile(Pattern.quote(textPart));
         Matcher matcher = pattern.matcher(Lemmatizer.letterSubstitution(body.toString()));

@@ -8,7 +8,7 @@ import searchengine.model.IndexTable;
 import java.util.List;
 
 @Repository
-public interface IndexTableRepository extends CrudRepository<IndexTable, Integer> {
+public interface IndexRepository extends CrudRepository<IndexTable, Integer> {
     @Query("select i.lemmaTable.lemma from IndexTable i where i.pageTable.id = ?1")
     List<String> findByPageTable_Id(int id);
     @Query("select i.rankLemma from IndexTable i where i.lemmaTable.lemma = ?1 and i.pageTable.id = ?2")

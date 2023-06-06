@@ -2,14 +2,20 @@ package searchengine.services;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import searchengine.IndexingThread;
-import searchengine.config.Site;
+import searchengine.dto.index.IndexData;
+import searchengine.parsing.IndexingThread;
+import searchengine.config.SiteConfig;
 import searchengine.config.SitesList;
 import searchengine.dto.error.ErrorResponse;
 import searchengine.dto.index.IndexResponse;
 import searchengine.model.SiteTable;
 import searchengine.model.StatusType;
+import searchengine.repositories.IndexRepository;
+import searchengine.repositories.LemmaRepository;
+import searchengine.repositories.PageRepository;
+import searchengine.repositories.SiteRepository;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -21,45 +27,48 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class IndexingServiceImpl implements IndexingService {
 
-    private final SiteTableService siteTableService;
-    private final PageTableService pageTableService;
-    private final LemmaTableService lemmaTableService;
-    private final IndexTableService indexTableService;
+    @Autowired
+    private final SiteRepository siteRepository;
+    @Autowired
+    private final PageRepository pageRepository;
+    @Autowired
+    private final LemmaRepository lemmaRepository;
+    @Autowired
+    private final IndexRepository indexRepository;
     private final SitesList sitesList;
     private final Logger logger = LoggerFactory.getLogger(IndexingServiceImpl.class);
-    private ThreadPoolExecutor executorService;
+    private ThreadPoolExecutor executor;
     private List<IndexingThread> threads = new ArrayList<>();
 
-    public IndexingServiceImpl(SiteTableService siteTableService,
-                               PageTableService pageTableService,
-                               LemmaTableService lemmaTableService,
-                               IndexTableService indexTableService,
+    public IndexingServiceImpl(SiteRepository siteRepository,
+                               PageRepository pageRepository,
+                               LemmaRepository lemmaRepository,
+                               IndexRepository indexRepository,
                                SitesList sitesList) {
-        this.siteTableService = siteTableService;
-        this.pageTableService = pageTableService;
-        this.lemmaTableService = lemmaTableService;
-        this.indexTableService = indexTableService;
+        this.siteRepository = siteRepository;
+        this.pageRepository = pageRepository;
+        this.lemmaRepository = lemmaRepository;
+        this.indexRepository = indexRepository;
         this.sitesList = sitesList;
     }
 
     @Override
     public Object startIndexing() {
-        List<SiteTable> siteTableList = startIndexingList();
-        if (siteTableService.presenceStatusType(StatusType.INDEXING)) {
+        List<IndexData> configSiteListTable = getConfigSitesList();
+        if (siteRepository.isStatus(StatusType.INDEXING)) {
             return new ErrorResponse(false, "Индексация уже запущена");
         }
-        if (executorService == null || executorService.isTerminated()) {
-            executorService = (ThreadPoolExecutor) Executors.newFixedThreadPool(siteTableList.size());
-        }
+        checkAndCreatingStatusExecutor(configSiteListTable.size());
         logger.info("Создание потока");
-        for (SiteTable siteTable : siteTableList) {
-            IndexingThread indexingThread = new IndexingThread(siteTable,
-                    siteTableService,
-                    pageTableService,
-                    lemmaTableService,
-                    indexTableService,
-                    siteTable.getUrl(), false);
-            executorService.execute(indexingThread);
+        for (IndexData indexData : configSiteListTable) {
+            indexData.setOneIndexing(false);
+            IndexingThread indexingThread = new IndexingThread(
+                    siteRepository,
+                    pageRepository,
+                    lemmaRepository,
+                    indexRepository,
+                    indexData);
+            executor.execute(indexingThread);
             threads.add(indexingThread);
         }
         return new IndexResponse(true);
@@ -67,29 +76,27 @@ public class IndexingServiceImpl implements IndexingService {
 
     @Override
     public Object indexPade(String url) {
-        url = url.trim();
         if (url.equals("")) {
             return new ErrorResponse(false, "Строка пуста");
         }
-        if (siteTableService.presenceStatusType(StatusType.INDEXING)) {
-            return new ErrorResponse(false, "Запущена полная индексация, дождитесь ее окончания для добавления/изменения");
+        if (siteRepository.isStatus(StatusType.INDEXING)) {
+            return new ErrorResponse(false, "Запущена индексация, дождитесь ее окончания для добавления/изменения");
         }
-        List<SiteTable> siteTableList = startIndexingList();
+        List<IndexData> configSiteListTable = getConfigSitesList();
         url = normalizeUrl(url);
-        SiteTable siteTable = findSiteUrl(siteTableList, url);
-        if (siteTable == null) {
+        IndexData indexData = findSiteByUrlInConfigList(configSiteListTable, url);
+        if (indexData == null) {
             return new ErrorResponse(false, "Данная страница находится за пределами сайтов, указанных в конфигурационном файле");
         }
-        if (executorService == null || executorService.isTerminated()) {
-            executorService = (ThreadPoolExecutor) Executors.newFixedThreadPool(siteTableList.size());
-        }
-        IndexingThread indexingThread = new IndexingThread(siteTable,
-                siteTableService,
-                pageTableService,
-                lemmaTableService,
-                indexTableService,
-                url, true);
-        executorService.execute(indexingThread);
+        checkAndCreatingStatusExecutor(configSiteListTable.size());
+        indexData.setOneIndexing(true);
+        IndexingThread indexingThread = new IndexingThread(
+                siteRepository,
+                pageRepository,
+                lemmaRepository,
+                indexRepository,
+                indexData);
+        executor.execute(indexingThread);
         threads.add(indexingThread);
         return new IndexResponse(true);
     }
@@ -97,15 +104,15 @@ public class IndexingServiceImpl implements IndexingService {
     @Override
     public Object stopIndexing() {
         logger.info("Попытка остановки потоков");
-        if (!siteTableService.presenceStatusType(StatusType.INDEXING)) {
+        if (!siteRepository.isStatus(StatusType.INDEXING)) {
             return new ErrorResponse(false, "Индексация не запущена");
         }
         boolean liveThread;
-        if (executorService != null) {
+        if (executor != null) {
             try {
                 threads.forEach(IndexingThread::interruptTread);
-                executorService.shutdown();
-                liveThread = executorService.awaitTermination(5, TimeUnit.MINUTES);
+                executor.shutdown();
+                liveThread = executor.awaitTermination(5, TimeUnit.MINUTES);
             } catch (InterruptedException e) {
                 logger.error("Ошибка закрытия потоков: " + e);
                 return new ErrorResponse(false, "Ошибка закрытия потоков");
@@ -113,51 +120,66 @@ public class IndexingServiceImpl implements IndexingService {
         } else {
             liveThread = true;
         }
-        List<SiteTable> siteTableList = siteTableService.getAll();
+        List<SiteTable> siteTableList = (List<SiteTable>) siteRepository.findAll();
         for (SiteTable siteTable : siteTableList) {
             logger.info("Запись статуса FAILED в БД");
-            siteTable.setStatus(StatusType.FAILED);
-            siteTable.setStatusTime(LocalDateTime.now());
-            siteTable.setId(siteTable.getId());
-            siteTableService.update(siteTable);
+            synchronized (siteRepository) {
+                siteRepository.updateStatusAndStatusTimeAndLastErrorById(
+                        StatusType.FAILED,
+                        LocalDateTime.now(),
+                        "Индексация остановлена пользователем",
+                        siteTable.getId()
+                );
+            }
         }
         return liveThread ? new IndexResponse(true) : new ErrorResponse(false, "Ошибка закрытия потоков");
     }
 
-    private SiteTable findSiteUrl(List<SiteTable> siteTables, String url) {
-        for (SiteTable site : siteTables) {
-            String siteUrl = site.getUrl();
-            if (!url.contains("www.")) {
-                siteUrl = siteUrl.replace("www.", "");
-            }
-            siteUrl = siteUrl.replace(siteUrl.substring(siteUrl.indexOf('/', 16) + 1), "");
-            if (url.startsWith(siteUrl)) {
-                return site;
-            }
-        }
-        return null;
-    }
-
-    private List<SiteTable> startIndexingList() {
-        List<SiteTable> siteList = new ArrayList<>();
-        List<Site> siteStatics = sitesList.getSites();
-        for (Site siteStatic : siteStatics) {
-            String siteUrl = normalizeUrl(siteStatic.getUrl());
+    private List<IndexData> getConfigSitesList() {
+        List<IndexData> configSiteListTable = new ArrayList<>();
+        for (SiteConfig siteConfigStatic : sitesList.getSitesConfig()) {
+            int parseTimeout = siteConfigStatic.getTimeout() == 0 ? 600 : siteConfigStatic.getTimeout();
+            String siteUrl = normalizeUrl(siteConfigStatic.getUrl());
             SiteTable siteTable = new SiteTable();
-            siteTable.setName(siteStatic.getName());
+            siteTable.setName(siteConfigStatic.getName());
             siteTable.setUrl(siteUrl);
             siteTable.setLastError(null);
             siteTable.setStatus(StatusType.INDEXING);
             siteTable.setStatusTime(LocalDateTime.now());
-            siteList.add(siteTable);
+            IndexData indexData = new IndexData(siteTable, parseTimeout, siteUrl);
+            configSiteListTable.add(indexData);
         }
-        return siteList;
+        return configSiteListTable;
     }
+
 
     private String normalizeUrl(String siteUrl) {
         if (siteUrl.length() - siteUrl.lastIndexOf("/") != 1) {
             siteUrl += "/";
         }
         return siteUrl;
+    }
+
+    private IndexData findSiteByUrlInConfigList(List<IndexData> configSiteListTable, String url) {
+        for (IndexData indexData : configSiteListTable) {
+            SiteTable siteTable = indexData.getSiteTable();
+            String siteUrl = siteTable.getUrl();
+            if (!url.contains("www.") || !siteUrl.contains("www.")) {
+                siteUrl = siteUrl.replace("www.", "");
+                url = url.replace("www.", "");
+            }
+            siteUrl = siteUrl.replace(siteUrl.substring(siteUrl.indexOf('/', 16) + 1), "");
+            if (url.startsWith(siteUrl)) {
+                indexData.setUrl(url);
+                return indexData;
+            }
+        }
+        return null;
+    }
+
+    private void checkAndCreatingStatusExecutor(int sizePool) {
+        if (executor == null || executor.isTerminated()) {
+            executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(sizePool);
+        }
     }
 }

@@ -34,15 +34,15 @@ public class ApiController {
 
     @PostMapping("/indexPage")
     public ResponseEntity indexPage(@RequestParam(name = "url", required = false, defaultValue = "") String url) {
-        return ResponseEntity.ok(indexingService.indexPade(url));
+        return ResponseEntity.ok(indexingService.indexPade(url.trim()));
     }
 
     @GetMapping("/search")
     public ResponseEntity search(
             @RequestParam(name = "query", defaultValue = "") String query,
-            @RequestParam(name = "site", defaultValue = "") String site,
+            @RequestParam(name = "site", defaultValue = "") String siteUrl,
             @RequestParam(name = "offset", defaultValue = "0") int offset,
             @RequestParam(name = "limit", defaultValue = "20") int limit) {
-        return ResponseEntity.ok(searchService.search(query, site, offset, limit));
+        return ResponseEntity.ok(searchService.search(query, siteUrl, offset, limit));
     }
 }

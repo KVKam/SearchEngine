@@ -6,7 +6,7 @@ import searchengine.model.PageTable;
 import searchengine.model.SiteTable;
 
 @Repository
-public interface PageTableRepository extends CrudRepository<PageTable, Integer> {
+public interface PageRepository extends CrudRepository<PageTable, Integer> {
     long countBySiteTable(SiteTable siteTable);
 
     PageTable findByPathAndSiteTable_Id(String path, int id);

@@ -9,7 +9,7 @@ import java.util.List;
 
 @Entity
 @Table(name = "page",
-        indexes = {@Index(columnList = "path", name = "indx_path")})
+        indexes = {@Index(columnList = "path", name = "index_path")})
 public class PageTable {
     @Id
     @Getter
